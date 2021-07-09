@@ -62,15 +62,21 @@ node {
 			doGenerateSubmoduleConfigurations: false,
 			submoduleCfg: [],
 		])
-		sh '''
+		sh '''#!/usr/bin/env bash
+			set -Eeuo pipefail -x
+
 			git -C oi config user.name 'Docker Library Bot'
 			git -C oi config user.email 'github+dockerlibrarybot@infosiftr.com'
 			git -C repo config user.name 'Docker Library Bot'
 			git -C repo config user.email 'github+dockerlibrarybot@infosiftr.com'
 
+			docker build --pull --tag oisupport/update.sh 'https://github.com/docker-library/oi-janky-groovy.git#:update.sh'
+
 			# prefill the bashbrew cache
 			cd repo
-			./generate-stackbrew-library.sh \\
+			user="$(id -u):$(id -g)"
+			docker run --init --rm --user "$user" --mount "type=bind,src=$PWD,dst=$PWD,ro" --workdir "$PWD" oisupport/update.sh \\
+				./generate-stackbrew-library.sh \\
 				| bashbrew from --apply-constraints /dev/stdin > /dev/null
 		'''
 
@@ -87,9 +93,14 @@ node {
 	def testBuildNamespace = 'update.sh'
 
 	ansiColor('xterm') { dir('repo') {
+		env.UPDATE_SCRIPT = repoMeta['update-script']
 		stage('update.sh') {
 			retry(3) {
-				sh repoMeta['update-script']
+				sh '''
+					user="$(id -u):$(id -g)"
+					docker run --init --rm --user "$user" --mount "type=bind,src=$PWD,dst=$PWD" --workdir "$PWD" oisupport/update.sh \\
+						bash -Eeuo pipefail -xc "$UPDATE_SCRIPT"
+				'''
 			}
 		}
 
@@ -112,7 +123,7 @@ node {
 				repo='${repo}'
 				repoMetaEnv='${repoMeta['env']}'
 				declare -A repoMetaOtherEnvs=( ${otherEnvsBash} )
-				repoMetaFrom='${repoMeta['from']}'
+				repoMetaFrom='${repoMeta['from'] ?: ''}'
 			""" + '''
 				declare -A versions=()
 
@@ -126,7 +137,9 @@ node {
 					exit 0
 				fi
 				dfdirs="$(
-					./generate-stackbrew-library.sh \\
+					user="$(id -u):$(id -g)"
+					docker run --init --rm --user "$user" --mount "type=bind,src=$PWD,dst=$PWD,ro" --workdir "$PWD" oisupport/update.sh \\
+						./generate-stackbrew-library.sh \\
 						| bashbrew cat -f '
 							{{- range .Entries -}}
 								{{- .File -}} = {{- .Directory -}}
@@ -137,6 +150,7 @@ node {
 				# then revert the temp commit so we can make real commits
 				git reset --mixed "$beforeTempCommit"
 
+				declare -A dirVersions=()
 				for dfdir in $dfdirs; do
 					df="${dfdir%%=*}" # "Dockerfile", etc
 					dir="${dfdir#$df=}" # "2.4/alpine", etc
@@ -165,7 +179,12 @@ node {
 						' "${dfs[@]}")"
 					done
 					version="${version#, }"
+					if [ -z "$version" ] && parentDir="$(dirname "$dir")" && [ -n "${dirVersions[$parentDir]:-}" ]; then
+						# if we don't have a version, but our parent directory does, let's assume it's something like "rabbitmq:management" (where the version number is technically the version number of the parent directory)
+						version="${dirVersions[$parentDir]}"
+					fi
 					[ -n "$version" ] || continue
+					dirVersions["$dir"]="$version"
 					versions["$version"]+=" $dfdir"
 				done
 
@@ -197,7 +216,10 @@ node {
 
 				# get our new commits into bashbrew
 				(
-					./generate-stackbrew-library.sh > "$BASHBREW_LIBRARY/$repo"
+					user="$(id -u):$(id -g)"
+					docker run --init --rm --user "$user" --mount "type=bind,src=$PWD,dst=$PWD,ro" --workdir "$PWD" oisupport/update.sh \\
+						./generate-stackbrew-library.sh \\
+						> "$BASHBREW_LIBRARY/$repo"
 
 					git -C "$BASHBREW_CACHE/git" fetch "$PWD" HEAD:
 				)
@@ -220,7 +242,7 @@ node {
 					sh '#!/bin/bash -ex' + """
 						bashbrew cat -f '{{ range .Entries }}{{ \$.DockerFroms . | join "\\n" }}{{ "\\n" }}{{ end }}' '${repo}' \\
 							| sort -u \\
-							| grep -vE '^(scratch|mcr.microsoft.com/windows/(nanoserver|servercore)|microsoft/(nanoserver|windowsservercore):.*|${repo}:.*)\$' \\
+							| grep -vE '^(scratch|mcr.microsoft.com/windows/(nanoserver|servercore):.*|microsoft/(nanoserver|windowsservercore):.*|${repo}:.*)\$' \\
 							| xargs -rtn1 docker pull \\
 							|| :
 					"""
@@ -266,6 +288,8 @@ node {
 			''' + """
 				repo='${repo}'
 				url='${repoMeta['url'].replaceFirst(':', '/').replaceFirst('git@', 'https://').replaceFirst('[.]git$', '')}'
+				oiFork='${repoMeta['oi-fork']}'
+				oiForkUrl='${repoMeta['oi-fork'].replaceFirst(':', '/').replaceFirst('git@', 'https://').replaceFirst('[.]git$', '')}'
 			""" + '''
 				git -C oi reset HEAD
 				git -C oi clean -dfx
@@ -294,7 +318,13 @@ node {
 					commitArgs+=( -m 'Changes:' -m "$changes" )
 				fi
 
-				( cd repo && ./generate-stackbrew-library.sh > "$BASHBREW_LIBRARY/$repo" )
+				(
+					cd repo
+					user="$(id -u):$(id -g)"
+					docker run --init --rm --user "$user" --mount "type=bind,src=$PWD,dst=$PWD,ro" --workdir "$PWD" oisupport/update.sh \\
+						./generate-stackbrew-library.sh \\
+						> "$BASHBREW_LIBRARY/$repo"
+				)
 
 				oi/naughty-from.sh "$repo"
 				oi/naughty-constraints.sh "$repo"
@@ -302,13 +332,13 @@ node {
 				date="$(git -C repo log -1 --format='format:%aD')"
 				export GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date"
 				if [ "$BRANCH_BASE" = "$BRANCH_PUSH" ] && git -C oi add "$BASHBREW_LIBRARY/$repo" && git -C oi commit "${commitArgs[@]}"; then
-					if diff "$BASHBREW_LIBRARY/$repo" <(wget -qO- "https://github.com/docker-library-bot/official-images/raw/$repo/library/$repo") &> /dev/null; then
+					if diff "$BASHBREW_LIBRARY/$repo" <(wget -qO- "$oiForkUrl/raw/$repo/library/$repo") &> /dev/null; then
 						# if this exact file content is already pushed to a bot branch, don't force push it again
 						exit
 					fi
-					git -C oi push -f git@github.com:docker-library-bot/official-images.git "HEAD:refs/heads/$repo"
+					git -C oi push -f "$oiFork" "HEAD:refs/heads/$repo"
 				else
-					git -C oi push git@github.com:docker-library-bot/official-images.git --delete "refs/heads/$repo"
+					git -C oi push "$oiFork" --delete "refs/heads/$repo"
 				fi
 			'''
 		}

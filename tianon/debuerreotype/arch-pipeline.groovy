@@ -26,17 +26,28 @@ if (!env.DPKG_ARCH) {
 	error("Unknown 'dpkg' architecture for '${env.ACT_ON_ARCH}'.")
 }
 
+switch (env.DPKG_ARCH) {
+	case [
+		// https://ports.debian.org/ (ports architectures only support unstable)
+		'riscv64',
+	]:
+		env.DEBIAN_PORTS = '1'
+		break
+
+	default:
+		env.DEBIAN_PORTS = ''
+		break
+}
+
 env.debuerreotypeVersion = vars.debuerreotypeVersion
+env.debuerreotypeExamplesCommit = vars.debuerreotypeExamplesCommit
 env.TZ = 'UTC'
+
+env.DOCKER_IMAGE = "debuerreotype/debuerreotype:${vars.debuerreotypeVersion}-${env.ACT_ON_ARCH}"
 
 node(multiarchVars.node(env.BUILD_ARCH, env.ACT_ON_IMAGE)) {
 	ansiColor('xterm') {
-		env.epoch = sh(returnStdout: true, script: 'date --date "$timestamp" +%s').trim()
-		env.serial = sh(returnStdout: true, script: 'date --date "@$epoch" +%Y%m%d').trim()
-		iso8601 = sh(returnStdout: true, script: 'date --date "@$epoch" --iso-8601=seconds').trim()
-
-		currentBuild.displayName = env.serial + ' (#' + currentBuild.number + ')'
-		currentBuild.description = '<code>@' + env.epoch + '</code><br /><code>' + iso8601 + '</code>'
+		vars.parseTimestamp(this)
 
 		env.debuerreotypeDir = env.WORKSPACE + '/debuerreotype'
 		dir(env.debuerreotypeDir) {
@@ -45,11 +56,15 @@ node(multiarchVars.node(env.BUILD_ARCH, env.ACT_ON_IMAGE)) {
 				sh '''
 					wget -O 'debuerreotype.tgz' "https://github.com/debuerreotype/debuerreotype/archive/${debuerreotypeVersion}.tar.gz"
 					tar -xf debuerreotype.tgz --strip-components=1
-					rm -f debuerreotype.tgz
+					if [ "$debuerreotypeExamplesCommit" != "$debuerreotypeVersion" ]; then
+						wget -O 'debuerreotype-examples.tgz' "https://github.com/debuerreotype/debuerreotype/archive/${debuerreotypeExamplesCommit}.tar.gz"
+						rm -rf examples
+						tar -xf debuerreotype-examples.tgz --strip-components=1 "debuerreotype-${debuerreotypeExamplesCommit}/examples"
+					fi
+					rm -f debuerreotype*.tgz
 					./scripts/debuerreotype-version
 
-					sed -ri "s!^FROM debian!FROM $TARGET_NAMESPACE/debian!" Dockerfile
-					sed -ri "s!^dockerImage=.*\\$!dockerImage='debuerreotype/debuerreotype:${debuerreotypeVersion}-${ACT_ON_ARCH}'!" build*.sh
+					sed -ri "s!^FROM debian${DEBIAN_PORTS:+:[^-]+}!FROM $TARGET_NAMESPACE/debian${DEBIAN_PORTS:+:unstable}!" Dockerfile
 
 					# temporarily resolve chicken and egg (https://lists.debian.org/debian-stable-announce/2019/07/msg00000.html)
 					echo 'RUN apt-get update -qq && apt-get install -yqq debian-archive-keyring && rm -rf /var/lib/apt/lists/*' >> Dockerfile
@@ -64,13 +79,55 @@ node(multiarchVars.node(env.BUILD_ARCH, env.ACT_ON_IMAGE)) {
 			deleteDir()
 
 			stage('Build') {
-				sh '''
+				sh '''#!/usr/bin/env bash
+					set -Eeuo pipefail -x
+
+					docker build --pull --tag "$DOCKER_IMAGE" "$debuerreotypeDir"
+
+					mkdir -p "$targetDir"
+
+					args=(
+						--init
+						--interactive
+						--rm
+
+						--cap-add SYS_ADMIN
+						--cap-drop SETFCAP
+
+						# --debian-eol potato wants to run "chroot ... mount ... /proc" which gets blocked (i386, ancient binaries, blah blah blah)
+						--security-opt seccomp=unconfined
+						# (other arches see this occasionally too)
+
+						# AppArmor blocks mount :)
+						--security-opt apparmor=unconfined
+
+						--tmpfs /tmp:dev,exec,suid,noatime
+						--workdir /tmp/workdir
+						--env TMPDIR=/tmp
+
+						--mount "type=bind,src=$debuerreotypeDir/examples,dst=/examples,ro"
+
+						--mount "type=bind,src=$targetDir,dst=/output"
+					)
+
+					if [ -t 0 ] && [ -t 1 ]; then
+						args+=( --tty )
+					fi
+
 					mkdir -p "$artifactsDir"
 					echo "$debuerreotypeVersion" > "$artifactsDir/debuerreotype-version"
+					echo "$epoch" > "$artifactsDir/debuerreotype-epoch"
 					echo "$serial" > "$artifactsDir/serial"
 					echo "$DPKG_ARCH" > "$artifactsDir/dpkg-arch"
 
-					"$debuerreotypeDir/build-all.sh" . "@$epoch"
+					args+=( "$DOCKER_IMAGE" )
+
+					if [ -n "${DEBIAN_PORTS:-}" ]; then
+						args+=( /examples/debian.sh --ports --arch="$DPKG_ARCH" --codename-copy /output unstable "@$epoch" )
+					else
+						args+=( /examples/debian-all.sh --arch="$DPKG_ARCH" /output "@$epoch" )
+					fi
+					docker run "${args[@]}"
 				'''
 			}
 		}

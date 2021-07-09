@@ -61,7 +61,14 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 				git checkout -b "$ARCH_BRANCH" origin/master
 
 				# convert "FROM debian:..." into "FROM arm32v7/debian:..." etc
-				sed -ri -e "s!^FROM !FROM $TARGET_NAMESPACE/!" */Dockerfile.builder
+				.github/workflows/fake-gsl.sh \\
+					| awk -F ': ' '$1 == "Directory" { print $2 "/Dockerfile.builder" }' \\
+					| xargs -rt sed -ri -e "s!^FROM !FROM $TARGET_NAMESPACE/!"
+
+				# Debian Ports means unstable only
+				if [ "$ACT_ON_ARCH" = 'riscv64' ]; then
+					sed -ri -e 's!^(FROM [^:]+):[^-]+!\\1:unstable!' */uclibc/Dockerfile.builder
+				fi
 			'''
 		}
 
@@ -69,7 +76,12 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 			sh '''
 				# gather a list of expected parents
 				parents="$(
-					gawk 'toupper($1) == "FROM" { print $2 }' */Dockerfile* \\
+					.github/workflows/fake-gsl.sh \\
+						| awk -F ': ' '$1 == "Directory" {
+							print $2 "/Dockerfile"
+							print $2 "/Dockerfile.builder"
+						}' \\
+						| xargs -r gawk 'toupper($1) == "FROM" { print $2 }' \\
 						| sort -u \\
 						| grep -vE '^scratch$|^'"$ACT_ON_IMAGE"'(:|$)'
 				)"
@@ -83,9 +95,8 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 		}
 
 		variants = sh(returnStdout: true, script: '''
-			echo */Dockerfile.builder \\
-				| xargs -n1 dirname \\
-				| xargs -n1 basename
+			.github/workflows/fake-gsl.sh \\
+				| awk -F ': ' '$1 == "Directory" { print $2 }'
 		''').trim().tokenize()
 
 		for (variant in variants) {
@@ -102,16 +113,15 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 					fi
 
 					if ! ./build.sh "$variant"; then
-						if [ "$variant" = 'uclibc' ]; then
-							case "$ACT_ON_ARCH" in
-								# expected failures
-								ppc64le|s390x)
-									echo >&2 "warning: $variant failed to build (expected) -- skipping"
-									rm -rf "$variant"
-									exit
-									;;
-							esac
-						fi
+						v="$(basename "$variant")" # "uclibc", "glibc", etc
+						case "$ACT_ON_ARCH/$v" in
+							# expected failures (missing toolchain support, etc)
+							ppc64le/uclibc | s390x/uclibc)
+								echo >&2 "warning: $variant failed to build (expected) -- skipping"
+								rm -rf "$variant"
+								exit
+								;;
+						esac
 
 						echo >&2 "error: $variant failed to build"
 						exit 1

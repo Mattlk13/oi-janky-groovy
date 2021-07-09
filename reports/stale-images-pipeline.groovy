@@ -40,6 +40,27 @@ node {
 		],
 	)
 
+	checkout(
+		scm: [
+			$class: 'GitSCM',
+			userRemoteConfigs: [[
+				url: 'https://github.com/docker-library/docs.git',
+			]],
+			branches: [[name: '*/master']],
+			extensions: [
+				[
+					$class: 'CleanCheckout',
+				],
+				[
+					$class: 'RelativeTargetDirectory',
+					relativeTargetDir: 'docs',
+				],
+			],
+			doGenerateSubmoduleConfigurations: false,
+			submoduleCfg: [],
+		],
+	)
+
 	repos = sh(returnStdout: true, script: '''
 		bashbrew list --all --repos
 	''').tokenize()
@@ -48,6 +69,8 @@ node {
 		badNews = sh(returnStdout: true, script: '''#!/usr/bin/env bash
 			set -Eeuo pipefail
 
+			count="$(bashbrew list --uniq "$repo" | wc -l)"
+
 			commit="$(git -C "$BASHBREW_LIBRARY" log -1 --format=format:%H -- "./$repo")"
 
 			t="$(git -C "$BASHBREW_LIBRARY" log -1 --format=format:%ct "$commit" --)"
@@ -55,10 +78,25 @@ node {
 
 			d="$(( (n - t) / OUTDATED_SCALE ))"
 
-			if [ "$d" -gt "$OUTDATED_CUTOFF" ]; then
+			if [ "$d" -gt "$OUTDATED_CUTOFF" ] || [ "$count" -eq 0 ]; then
 				echo "$repo: $d $OUTDATED_SCALE_HUMAN since last update! ($(date -d "@$t" +%Y-%m-%d))"
 				echo "- https://github.com/docker-library/official-images/commit/$commit"
 				echo "- https://github.com/docker-library/official-images/pulls?q=label%3Alibrary%2F$repo"
+
+				if [ -d "docs/$repo" ] && docsCommit="$(git -C docs log -1 --format=format:%H -- "$repo/" ":(exclude)$repo/README.md")" && [ -n "$docsCommit" ]; then
+					docsT="$(git -C docs log -1 --format=format:%ct "$docsCommit" --)"
+					docsD="$(date -d "@$docsT" +%Y-%m-%d)"
+					echo 'docs:'
+					echo "- https://github.com/docker-library/docs/commit/$docsCommit ($docsD)"
+					echo "- https://github.com/docker-library/docs/tree/$docsCommit/$repo#readme"
+					if [ -f "docs/$repo/deprecated.md" ]; then
+						echo "- https://github.com/docker-library/docs/blob/$docsCommit/$repo/deprecated.md"
+					fi
+				fi
+
+				if [ "$count" -eq 0 ]; then
+					echo "($repo has $count tags, so this is expected)"
+				fi
 			fi
 		''').trim()
 

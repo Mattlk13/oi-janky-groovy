@@ -7,7 +7,9 @@ archesMeta = [
 	['arm32v7', [:]],
 	['arm64v8', [:]],
 	['i386', [:]],
+	['mips64le', [:]],
 	['ppc64le', [:]],
+	['riscv64', [:]],
 	['s390x', [:]],
 	['windows-amd64', [:]],
 ]
@@ -18,7 +20,9 @@ dpkgArches = [
 	'arm32v7': 'armhf',
 	'arm64v8': 'arm64',
 	'i386': 'i386',
+	'mips64le': 'mips64el',
 	'ppc64le': 'ppc64el',
+	'riscv64': 'riscv64',
 	's390x': 's390x',
 ]
 
@@ -42,14 +46,11 @@ def archNamespaces() {
 // given an arch/image combo, returns a target node expression
 def node(arch, image) {
 	switch (arch + ' ' + image) {
-		case ~/arm32v[57] memcached/: // https://github.com/docker-library/memcached/issues/25
-			return 'multiarch-rpi2'
-
 		case [
 			'amd64 busybox-builder',
 			'amd64 debuerreotype',
 			'i386 busybox-builder',
-			'i386 debuerreotype',
+			//'i386 debuerreotype', // this fails on many of our builders thanks to https://github.com/debuerreotype/docker-debian-artifacts/issues/97
 		]:
 			return ''
 	}
@@ -186,7 +187,7 @@ def bashbrewBuildAndPush(context) {
 				mkdir build-info/image-ids
 				for tag in ${TAGS:-}; do
 					for alias in $(bashbrew list "$tag"); do
-						docker image inspect --format '{{ .Id }}' "$TARGET_NAMESPACE/$tag" > "build-info/image-ids/$alias.txt"
+						docker image inspect --format '{{ .Id }}' "$TARGET_NAMESPACE/$tag" > "build-info/image-ids/${alias//:/_}.txt"
 					done
 				done
 				echo "${TAGS:-}" | xargs -rn1 > build-info/success.txt
@@ -195,27 +196,29 @@ def bashbrewBuildAndPush(context) {
 			archiveArtifacts 'build-info/**'
 		}
 
-		context.stage('Push') {
-			dryRun = sh(returnStdout: true, script: '''
-				bashbrew push --dry-run --target-namespace "$TARGET_NAMESPACE" $TAGS
+		context.withCredentials([string(credentialsId: 'dockerhub-public-proxy', variable: 'DOCKERHUB_PUBLIC_PROXY')]) {
+			stage('Push') {
+				dryRun = sh(returnStdout: true, script: '''
+					bashbrew push --dry-run --target-namespace "$TARGET_NAMESPACE" $TAGS
 
-				if [ -n "$BASHBREW_ARCH" ]; then
-					bashbrew --arch-namespace "$ACT_ON_ARCH = $TARGET_NAMESPACE" put-shared --dry-run --single-arch --target-namespace "$TARGET_NAMESPACE" "$ACT_ON_IMAGE"
-				fi
-			''').trim()
+					if [ -n "$BASHBREW_ARCH" ]; then
+						bashbrew --arch-namespace "$ACT_ON_ARCH = $TARGET_NAMESPACE" put-shared --dry-run --single-arch --target-namespace "$TARGET_NAMESPACE" "$ACT_ON_IMAGE"
+					fi
+				''').trim()
 
-			if (dryRun != '') {
-				retry(3) {
-					sh '''
-						bashbrew push --target-namespace "$TARGET_NAMESPACE" $TAGS
+				if (dryRun != '') {
+					retry(3) {
+						sh '''
+							bashbrew push --target-namespace "$TARGET_NAMESPACE" $TAGS
 
-						if [ -n "$BASHBREW_ARCH" ]; then
-							bashbrew --arch-namespace "$ACT_ON_ARCH = $TARGET_NAMESPACE" put-shared --single-arch --target-namespace "$TARGET_NAMESPACE" "$ACT_ON_IMAGE"
-						fi
-					'''
+							if [ -n "$BASHBREW_ARCH" ]; then
+								bashbrew --arch-namespace "$ACT_ON_ARCH = $TARGET_NAMESPACE" put-shared --single-arch --target-namespace "$TARGET_NAMESPACE" "$ACT_ON_IMAGE"
+							fi
+						'''
+					}
+				} else {
+					echo('Skipping unnecessary push!')
 				}
-			} else {
-				echo('Skipping unnecessary push!')
 			}
 		}
 	}

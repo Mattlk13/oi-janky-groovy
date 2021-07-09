@@ -67,10 +67,9 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 
 					# gather a list of expected parents
 					parents="$(
-						bashbrew cat -f "$BASHBREW_FROMS_TEMPLATE" "$ACT_ON_IMAGE" 2>/dev/null \\
-							| sort -u \\
-							| grep -vE '^$|^scratch$|^'"$ACT_ON_IMAGE"'(:|$)' \\
-							|| true
+						bashbrew cat --format "$BASHBREW_FROMS_TEMPLATE" "$ACT_ON_IMAGE" \\
+							| { grep -vE '^$|^scratch$|^'"$ACT_ON_IMAGE"'(:|$)' || true; } \\
+							| sort -u
 					)"
 					# all parents might be "scratch", in which case "$parents" will be empty
 
@@ -91,7 +90,7 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 						fi
 
 						parentRepo="${parent%%:*}"
-						parentImageId="$(wget -qO- "https://doi-janky.infosiftr.net/job/multiarch/job/$ACT_ON_ARCH/job/$parentRepo/lastSuccessfulBuild/artifact/build-info/image-ids/$parent.txt" 2>/dev/null || :)"
+						parentImageId="$(wget -qO- "https://doi-janky.infosiftr.net/job/multiarch/job/$ACT_ON_ARCH/job/$parentRepo/lastSuccessfulBuild/artifact/build-info/image-ids/${parent//:/_}.txt" 2>/dev/null || :)"
 						if [ -z "$parentImageId" ]; then
 							# we can't tell if it's fresh; pull it
 							parentsToPull+=( "$parent" )
@@ -119,24 +118,6 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 							| gawk -v RS='[[:space:]]+' -v ns="$TARGET_NAMESPACE" '!/\\// { print ns "/" $0; print }' \\
 							| xargs -rtn2 docker tag \\
 							|| true
-					fi
-
-					# if we can't fetch the tags from their real locations, let's try the warehouse
-					if ! bashbrew from --uniq --apply-constraints "$ACT_ON_IMAGE"; then
-						refsList="$(
-							bashbrew list --uniq --apply-constraints "$ACT_ON_IMAGE" \\
-								| sed \\
-									-e 's!:!/!' \\
-									-e "s!^!refs/tags/$ACT_ON_ARCH/!" \\
-									-e 's!$!:!'
-						)"
-						[ -n "$refsList" ]
-						git -C "${BASHBREW_CACHE:-$HOME/.cache/bashbrew}/git" \\
-							fetch --no-tags \\
-							https://github.com/docker-library/commit-warehouse.git \\
-							$refsList
-
-						bashbrew from --uniq --apply-constraints "$ACT_ON_IMAGE"
 					fi
 				'''
 
@@ -206,6 +187,18 @@ node(vars.node(env.ACT_ON_ARCH, env.ACT_ON_IMAGE)) {
 						quietPeriod: 15 * 60, // 15 minutes
 						wait: false,
 					)
+				}
+			}
+
+			stage('Trigger "put-shared"') {
+				try {
+					build(
+						job: '/put-shared/light/' + env.ACT_ON_IMAGE,
+						quietPeriod: 15 * 60, // 15 minutes
+						wait: false,
+					)
+				} catch (err) {
+					echo "Failed to trigger 'put-shared' job (${err.getMessage()})."
 				}
 			}
 		}

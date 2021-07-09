@@ -2,6 +2,8 @@
 // tl;dr, iterating over Maps in pipeline groovy is pretty broken in real-world use
 def defaultRepoMeta = [
 	['url', 'git@github.com:docker-library/%%REPO%%.git'],
+	['oi-fork', 'git@github.com:docker-library-bot/official-images.git'],
+	['pipeline-script', 'update.sh/target-pipeline.groovy'],
 	['env', '.+_VERSION'], // gawk regex, anchored
 	['otherEnvs', []],
 	['branch-base', 'master'], // branch to check out from
@@ -14,16 +16,16 @@ def rawReposData = [
 		'update-script': 'true', // TODO determine if more can/should be done here
 	]],
 	['cassandra', [
-		'env': 'CASSANDRA_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['docker', [
-		'env': 'DOCKER_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['drupal', [
-		'env': 'DRUPAL_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['gcc', [
-		'env': 'GCC_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['ghost', [
 		'env': 'GHOST_VERSION',
@@ -32,10 +34,10 @@ def rawReposData = [
 		],
 	]],
 	['golang', [
-		'env': 'GOLANG_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['haproxy', [
-		'env': 'HAPROXY_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['httpd', [
 		'env': 'HTTPD_VERSION',
@@ -47,38 +49,26 @@ def rawReposData = [
 	['julia', [
 		'env': 'JULIA_VERSION',
 	]],
-	['mariadb', [
-		'env': 'MARIADB_VERSION',
-	]],
 	['memcached', [
 		'env': 'MEMCACHED_VERSION',
 	]],
 	['mongo', [
-		'env': 'MONGO_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['mysql', [
-		'env': 'MYSQL_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['openjdk', [
-		'env': 'JAVA_VERSION',
-		'otherEnvs': [
-			['alpine', 'JAVA_ALPINE_VERSION'],
-			['debian', 'JAVA_DEBIAN_VERSION'],
-			['ca-certificates-java', 'CA_CERTIFICATES_JAVA_VERSION'],
-			['windows ojdkbuild', 'JAVA_OJDKBUILD_VERSION'],
-		],
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['php', [
-		'env': 'PHP_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['postgres', [
-		'env': 'PG_VERSION',
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['pypy', [
-		'env': 'PYPY_VERSION',
-		'otherEnvs': [
-			['pip', 'PYTHON_PIP_VERSION'],
-		],
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['python', [
 		'env': 'PYTHON_VERSION',
@@ -89,11 +79,7 @@ def rawReposData = [
 		],
 	]],
 	['rabbitmq', [
-		'env': 'RABBITMQ_VERSION',
-		'otherEnvs': [
-			['OpenSSL', 'OPENSSL_VERSION'],
-			['Erlang/OTP', 'OTP_VERSION'],
-		],
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['redis', [
 		'env': 'REDIS_VERSION',
@@ -105,11 +91,7 @@ def rawReposData = [
 		],
 	]],
 	['ruby', [
-		'env': 'RUBY_VERSION',
-		'otherEnvs': [
-			['rubygems', 'RUBYGEMS_VERSION'],
-			['bundler', 'BUNDLER_VERSION'],
-		],
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['tomcat', [
 		'env': 'TOMCAT_VERSION',
@@ -118,10 +100,7 @@ def rawReposData = [
 		],
 	]],
 	['wordpress', [
-		'env': 'WORDPRESS_VERSION',
-		'otherEnvs': [
-			['cli', 'WORDPRESS_CLI_VERSION'],
-		],
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 
 	// Elastic images (specialized FROM tags)
@@ -140,7 +119,7 @@ def rawReposData = [
 
 	// versionless
 	['buildpack-deps', [
-		'update-script': 'true', // TODO determine if there's more we could do here (auto add/remove of suites?)
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 	]],
 	['hello-world', [
 		'update-script': 'true',
@@ -148,12 +127,12 @@ def rawReposData = [
 
 	// tianon
 	['bash', [
+		'pipeline-script': 'update.sh/versions-pipeline.groovy',
 		'url': 'git@github.com:tianon/docker-bash.git',
-		'env': '_BASH_VERSION',
-		'otherEnvs': [
-			['patch level', '_BASH_LATEST_PATCH'],
-			['commit', '_BASH_COMMIT'],
-		],
+	]],
+	['cirros', [
+		'url': 'git@github.com:tianon/docker-brew-cirros.git',
+		'update-script': 'true',
 	]],
 	['irssi', [
 		'url': 'git@github.com:jessfraz/irssi.git',
@@ -173,22 +152,29 @@ def rawReposData = [
 		'env': 'MATOMO_VERSION',
 	]],
 
-	// mbabker
+	// hleithner
 	['joomla', [
-		'url': 'git@github.com:joomla/docker-joomla.git',
+		'url': 'git@github.com:joomla-docker/docker-joomla.git',
+		'oi-fork': 'git@github.com:joomla-docker/official-images.git',
 		'env': 'JOOMLA_VERSION',
-	]],
-
-	// LeoColomb
-	['yourls', [
-		'url': 'git@github.com:YOURLS/docker-yourls.git',
-		'env': 'YOURLS_VERSION',
 	]],
 
 	// paultag
 	['hylang', [
 		'url': 'git@github.com:hylang/docker-hylang.git',
 		'env': 'HY_VERSION',
+	]],
+
+	// knickers
+	['mongo-express', [
+		'url': 'git@github.com:mongo-express/mongo-express-docker.git',
+		'env': 'MONGO_EXPRESS',
+	]],
+
+	// tilosp
+	['nextcloud', [
+		'url': 'https://github.com/nextcloud/docker.git',
+		'update-script': 'true', // "update.sh" is handled via GitHub Actions
 	]],
 ]
 
